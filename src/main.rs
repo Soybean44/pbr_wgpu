@@ -1,4 +1,7 @@
+mod vertex;
 use std::borrow::Cow;
+use vertex::{create_vertices, Vertex};
+use wgpu::util::DeviceExt;
 use winit::{
     event::{Event, WindowEvent},
     event_loop::EventLoop,
@@ -39,17 +42,83 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         .await
         .expect("Failed to create device");
 
+    // Create the buffers
+    let vertex_size = size_of::<Vertex>();
+    let (vertex_data, index_data) = create_vertices();
+
+    let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Vertex Buffer"),
+        contents: bytemuck::cast_slice(&vertex_data),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Index Buffer"),
+        contents: bytemuck::cast_slice(&index_data),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
+    // Create pipeline layout
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("uniform_bind_group_layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+    struct ScreenResolution {
+        width: f32,
+        height: f32,
+    }
+    let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Uniform Buffer"),
+        contents: bytemuck::cast_slice(&[ScreenResolution {
+            width: size.width as f32,
+            height: size.height as f32,
+        }]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    // Create bind group
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buf.as_entire_binding(),
+        }],
+        label: Some("uniform_bind_group"),
+    });
+
     // Load the shaders from disk
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("triangle.wgsl"))),
     });
 
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[],
-        push_constant_ranges: &[],
-    });
+    // Create vertex buffers
+    let vertex_buffers = [wgpu::VertexBufferLayout {
+        array_stride: vertex_size as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 0,
+            shader_location: 0,
+        }],
+    }];
 
     let swapchain_capabilities = surface.get_capabilities(&adapter);
     let swapchain_format = swapchain_capabilities.formats[0];
@@ -60,7 +129,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: "vs_main",
-            buffers: &[],
+            buffers: &vertex_buffers,
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -100,10 +169,27 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                         config.width = new_size.width.max(1);
                         config.height = new_size.height.max(1);
                         surface.configure(&device, &config);
+                        queue.write_buffer(
+                            &uniform_buf,
+                            0,
+                            bytemuck::cast_slice(&[ScreenResolution {
+                                width: config.width as f32,
+                                height: config.height as f32,
+                            }]),
+                        );
                         // On macos the window needs to be redrawn manually after resizing
                         window.request_redraw();
                     }
                     WindowEvent::RedrawRequested => {
+                        println!("width:{}, height:{}", config.width, config.height);
+                        queue.write_buffer(
+                            &uniform_buf,
+                            0,
+                            bytemuck::cast_slice(&[ScreenResolution {
+                                width: 0.0,
+                                height: 0.0,
+                            }]),
+                        );
                         let frame = surface
                             .get_current_texture()
                             .expect("Failed to acquire next swap chain texture");
@@ -131,7 +217,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                                     occlusion_query_set: None,
                                 });
                             rpass.set_pipeline(&render_pipeline);
-                            rpass.draw(0..3, 0..1);
+                            rpass.set_bind_group(0, &bind_group, &[]);
+                            rpass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint16);
+                            rpass.set_vertex_buffer(0, vertex_buf.slice(..));
+                            rpass.draw_indexed(0..index_data.len() as u32, 0, 0..1);
                         }
 
                         queue.submit(Some(encoder.finish()));
