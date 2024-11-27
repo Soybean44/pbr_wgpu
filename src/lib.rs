@@ -1,6 +1,7 @@
 mod vertex;
 use std::borrow::Cow;
 use vertex::{create_vertices, Vertex};
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -26,7 +27,6 @@ async fn run_app(event_loop: EventLoop<()>, window: Window) {
         })
         .await
         .expect("Failed to find an appropriate adapter");
-
     // Create the logical device and command queue
     let (device, queue) = adapter
         .request_device(
@@ -60,6 +60,7 @@ async fn run_app(event_loop: EventLoop<()>, window: Window) {
     });
 
     // Create pipeline layout
+    #[cfg(not(target_arch = "wasm32"))]
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("uniform_bind_group_layout"),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -72,6 +73,11 @@ async fn run_app(event_loop: EventLoop<()>, window: Window) {
             },
             count: None,
         }],
+    });
+    #[cfg(target_arch = "wasm32")]
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("uniform_bind_group_layout"),
+        entries: &[],
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -95,6 +101,7 @@ async fn run_app(event_loop: EventLoop<()>, window: Window) {
     });
 
     // Create bind group
+    #[cfg(not(target_arch = "wasm32"))]
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         layout: &bind_group_layout,
         entries: &[wgpu::BindGroupEntry {
@@ -103,8 +110,20 @@ async fn run_app(event_loop: EventLoop<()>, window: Window) {
         }],
         label: Some("uniform_bind_group"),
     });
+    #[cfg(target_arch = "wasm32")]
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &bind_group_layout,
+        entries: &[],
+        label: Some("uniform_bind_group"),
+    });
 
     // Load the shaders from disk
+    #[cfg(target_arch = "wasm32")]
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("triangle_wasm.wgsl"))),
+    });
+    #[cfg(not(target_arch = "wasm32"))]
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("triangle.wgsl"))),
@@ -244,10 +263,13 @@ pub fn run() {
             .unwrap()
             .dyn_into::<web_sys::HtmlCanvasElement>()
             .unwrap();
-        builder = builder.with_canvas(Some(canvas));
+        canvas.set_width(640);
+        canvas.set_height(400);
+        builder = builder
+            .with_canvas(Some(canvas))
+            .with_inner_size(winit::dpi::LogicalSize::new(640.0, 400.0));
     }
     let window = builder.build(&event_loop).unwrap();
-
     #[cfg(not(target_arch = "wasm32"))]
     {
         env_logger::init();
